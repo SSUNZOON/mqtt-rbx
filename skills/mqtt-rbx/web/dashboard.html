@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>RBX MQTT Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #161d2e;
+    --border: #262f45;
+    --text: #e7ebf5;
+    --muted: #8892a8;
+    --online: #34d399;
+    --offline: #6b7280;
+    --accent: #6d8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Pretendard, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  header {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  header .status { font-size: 13px; color: var(--muted); }
+  header .status.connected { color: var(--online); }
+  header .status.error { color: #f87171; }
+
+  main { padding: 24px; max-width: 960px; margin: 0 auto; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 14px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .card .id { font-weight: 600; font-size: 15px; margin-bottom: 8px; word-break: break-all; }
+  .dot-row { display: flex; align-items: center; gap: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--offline); flex-shrink: 0; }
+  .dot.online { background: var(--online); box-shadow: 0 0 8px var(--online); }
+  .state-text { font-size: 14px; }
+  .state-text.online { color: var(--online); }
+  .state-text.offline { color: var(--muted); }
+  .meta { margin-top: 8px; font-size: 12px; color: var(--muted); }
+
+  .empty {
+    color: var(--muted);
+    text-align: center;
+    padding: 60px 20px;
+    border: 1px dashed var(--border);
+    border-radius: 12px;
+  }
+
+  dialog {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    width: min(360px, 90vw);
+  }
+  dialog::backdrop { background: rgba(0,0,0,.5); }
+  dialog h2 { margin-top: 0; font-size: 16px; }
+  dialog label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+  dialog input {
+    width: 100%;
+    padding: 8px 10px;
+    background: #0f1420;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 14px;
+  }
+  dialog .actions { margin-top: 18px; display: flex; justify-content: flex-end; gap: 8px; }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>RBX MQTT Dashboard</h1>
+  <div id="connStatus" class="status">connecting…</div>
+</header>
+
+<main>
+  <div id="grid" class="grid"></div>
+  <div id="empty" class="empty" hidden>아직 status 메시지를 받은 디바이스가 없습니다. 보드 전원을 켜면 자동으로 나타납니다.</div>
+</main>
+
+<dialog id="connDialog">
+  <h2>브로커 접속 정보</h2>
+  <label for="host">Host (WebSocket, 9001)</label>
+  <input id="host" placeholder="192.168.0.32">
+  <label for="user">Username</label>
+  <input id="user" placeholder="RBX_dashboard">
+  <label for="pass">Password</label>
+  <input id="pass" type="password">
+  <div class="actions">
+    <button class="secondary" id="connCancel">닫기</button>
+    <button id="connSave">연결</button>
+  </div>
+</dialog>
+
+<script>
+const TOPIC_PREFIX = "RBX/";
+const STATUS_SUFFIX = "/status";
+const OFFLINE_AFTER_MS = 15000; // status is retained + LWT, but flag stale entries too
+
+const params = new URLSearchParams(location.search);
+const store = {
+  get: (k, fallback) => localStorage.getItem("rbx-dash-" + k) ?? fallback,
+  set: (k, v) => localStorage.setItem("rbx-dash-" + k, v),
+};
+
+const els = {
+  grid: document.getElementById("grid"),
+  empty: document.getElementById("empty"),
+  connStatus: document.getElementById("connStatus"),
+  dialog: document.getElementById("connDialog"),
+  host: document.getElementById("host"),
+  user: document.getElementById("user"),
+  pass: document.getElementById("pass"),
+  connSave: document.getElementById("connSave"),
+  connCancel: document.getElementById("connCancel"),
+};
+
+const devices = new Map(); // id -> {state, ts}
+let client = null;
+
+function render() {
+  els.grid.innerHTML = "";
+  const ids = [...devices.keys()].sort();
+  els.empty.hidden = ids.length > 0;
+
+  for (const id of ids) {
+    const d = devices.get(id);
+    const stale = Date.now() - d.ts > OFFLINE_AFTER_MS * 20; // ~5min no retained refresh at all
+    const online = d.state === "online" && !stale;
+
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      <div class="id">${id}</div>
+      <div class="dot-row">
+        <div class="dot ${online ? "online" : ""}"></div>
+        <div class="state-text ${online ? "online" : "offline"}">${online ? "ON (online)" : "OFF (offline)"}</div>
+      </div>
+      <div class="meta">last update: ${new Date(d.ts).toLocaleTimeString()}</div>
+    `;
+    els.grid.appendChild(card);
+  }
+}
+
+function setConnStatus(text, cls) {
+  els.connStatus.textContent = text;
+  els.connStatus.className = "status" + (cls ? " " + cls : "");
+}
+
+function connect() {
+  const host = params.get("host") || store.get("host", "");
+  const user = store.get("user", "");
+  const pass = store.get("pass", "");
+
+  if (!host) {
+    els.dialog.showModal();
+    return;
+  }
+  els.host.value = host;
+  els.user.value = user;
+
+  const url = `ws://${host}:9001`;
+  setConnStatus(`connecting to ${url} …`);
+
+  client = mqtt.connect(url, {
+    username: user || undefined,
+    password: pass || undefined,
+    reconnectPeriod: 3000,
+    connectTimeout: 8000,
+  });
+
+  client.on("connect", () => {
+    setConnStatus(`connected — ${url}`, "connected");
+    client.subscribe(TOPIC_PREFIX + "+" + STATUS_SUFFIX);
+  });
+
+  client.on("reconnect", () => setConnStatus(`reconnecting to ${url} …`));
+  client.on("close", () => setConnStatus("disconnected", "error"));
+  client.on("error", (err) => {
+    setConnStatus(`error: ${err.message || err}`, "error");
+    els.dialog.showModal();
+  });
+
+  client.on("message", (topic, payload) => {
+    if (!topic.startsWith(TOPIC_PREFIX) || !topic.endsWith(STATUS_SUFFIX)) return;
+    const id = topic.slice(TOPIC_PREFIX.length, -STATUS_SUFFIX.length);
+    devices.set(id, { state: payload.toString().trim(), ts: Date.now() });
+    render();
+  });
+}
+
+els.connSave.addEventListener("click", () => {
+  store.set("host", els.host.value.trim());
+  store.set("user", els.user.value.trim());
+  store.set("pass", els.pass.value);
+  els.dialog.close();
+  if (client) client.end(true);
+  connect();
+});
+els.connCancel.addEventListener("click", () => els.dialog.close());
+
+// gear-less re-open: click the header status text to edit connection info
+els.connStatus.style.cursor = "pointer";
+els.connStatus.title = "클릭하면 접속 정보 수정";
+els.connStatus.addEventListener("click", () => {
+  els.host.value = store.get("host", "");
+  els.user.value = store.get("user", "");
+  els.pass.value = store.get("pass", "");
+  els.dialog.showModal();
+});
+
+render();
+connect();
+setInterval(render, 5000); // keep "last update" relative time fresh
+</script>
+
+</body>
+</html>

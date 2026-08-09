@@ -1,0 +1,5 @@
+# never commit real credentials or per-machine secrets
+credentials.txt
+*.credentials.txt
+arduino_secrets.h
+.mqtt-rbx
