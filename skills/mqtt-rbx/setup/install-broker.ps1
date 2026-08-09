@@ -171,9 +171,13 @@ if ($Auth) {
 }
 if ($LASTEXITCODE -ne 0) { throw "self-test publish failed - check $logPath" }
 
-$lanIp = (Get-NetIPAddress -AddressFamily IPv4 |
-  Where-Object { $_.InterfaceAlias -notmatch 'Loopback' -and $_.IPAddress -notmatch '^169\.254' } |
-  Select-Object -First 1 -ExpandProperty IPAddress)
+# Prefer a real Wi-Fi/Ethernet adapter's address over virtual ones
+# (Hyper-V/WSL/VPN switches show up here too and are not reachable from
+# other devices on the actual LAN, which quietly breaks board connectivity).
+$lanCandidates = Get-NetIPAddress -AddressFamily IPv4 |
+  Where-Object { $_.InterfaceAlias -notmatch 'Loopback|vEthernet|Virtual|Pseudo|VPN' -and $_.IPAddress -notmatch '^169\.254' }
+$lanIp = ($lanCandidates | Where-Object { $_.InterfaceAlias -match 'Wi-?Fi|Ethernet' } | Select-Object -First 1 -ExpandProperty IPAddress)
+if (-not $lanIp) { $lanIp = ($lanCandidates | Select-Object -First 1 -ExpandProperty IPAddress) }
 
 Write-Host ""
 Write-Host "mqtt-rbx broker is up." -ForegroundColor Green
