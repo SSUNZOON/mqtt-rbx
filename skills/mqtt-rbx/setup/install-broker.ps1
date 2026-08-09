@@ -154,6 +154,17 @@ $confLines += @(
 )
 Set-Content -Path $confPath -Value $confLines -Encoding ascii
 
+# --- firewall: allow boards/dashboards on the LAN to reach 1883 / 9001 ----
+foreach ($fw in @(
+  @{ Name = "mqtt-rbx MQTT 1883"; Port = 1883 }
+  @{ Name = "mqtt-rbx WebSockets 9001"; Port = 9001 }
+)) {
+  if (-not (Get-NetFirewallRule -DisplayName $fw.Name -ErrorAction SilentlyContinue)) {
+    New-NetFirewallRule -DisplayName $fw.Name -Direction Inbound -Protocol TCP `
+      -LocalPort $fw.Port -Action Allow -Profile Any | Out-Null
+  }
+}
+
 # --- restart service ------------------------------------------------------
 Restart-Service -Name mosquitto -Force
 Start-Sleep -Seconds 1
