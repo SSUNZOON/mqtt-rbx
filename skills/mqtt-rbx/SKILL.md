@@ -10,37 +10,53 @@ shared classroom broker, no anonymous access. Up to ~10 clients, topic
 namespace `RBX/`. Built for XIAO ESP32C6 boards but works with anything that
 speaks MQTT.
 
-This is the same shape as `mqtt-classroom`, with three differences: it's
-**your** broker (runs on your PC), it requires **username/password auth**,
-and it also serves **MQTT over WebSockets on 9001** so a browser dashboard
-can connect directly.
+This is the same shape as `mqtt-classroom`, with two differences: it's
+**your** broker (runs on your PC), and it also serves **MQTT over
+WebSockets on 9001** so a browser dashboard can connect directly.
+
+By default the broker allows **anonymous access** — no username/password —
+since on a trusted home/classroom LAN that's one less thing to configure or
+get wrong. Pass `-Auth` to the setup script if you want per-device
+username/password + ACLs instead (see "Optional: username/password auth"
+below).
 
 ## One-time setup
 
 1. Install Mosquitto (Windows): `winget install --id EclipseFoundation.Mosquitto -e`
    (installs the broker as a Windows service, plus `mosquitto_pub` / `mosquitto_sub`
-   / `mosquitto_passwd` — add `C:\Program Files\mosquitto` to PATH if the skill
-   scripts don't find them automatically).
+   — add `C:\Program Files\mosquitto` to PATH if the skill scripts don't find
+   them automatically).
 2. Run the setup script **as Administrator** (it edits the service's config and
    restarts it):
    ```powershell
    cd setup
-   .\install-broker.ps1 -Devices 4 -DashboardUser
+   .\install-broker.ps1
    ```
-   This generates a fresh random password for each account (`RBX_esp01`..`RBX_esp0N`
-   plus `RBX_dashboard`), writes `mosquitto.conf` with two listeners —
-   `1883` (plain MQTT, for boards) and `9001` (MQTT over WebSockets, for the
-   dashboard) — sets `allow_anonymous false`, writes a password file and an
-   ACL file (each device can only read/write its own `RBX/<id>/#` subtree;
-   the dashboard account is read-only across `RBX/#`), and restarts the
-   `mosquitto` service.
-   **The generated credentials are never written into this repo.** They're
-   printed once to the console and saved to
-   `%LOCALAPPDATA%\mqtt-rbx\credentials.txt` on the machine you ran the
-   script on — copy what you need from there into each board's
-   `arduino_secrets.h` and keep that file out of git.
+   This writes `mosquitto.conf` with two listeners — `1883` (plain MQTT, for
+   boards) and `9001` (MQTT over WebSockets, for the dashboard) — sets
+   `allow_anonymous true`, and restarts the `mosquitto` service.
 3. Note the broker machine's LAN IP the script prints (or run
    `ipconfig` / `Get-NetIPAddress`) — boards and the dashboard both need it.
+
+## Optional: username/password auth
+
+If you'd rather lock the broker down:
+
+```powershell
+.\install-broker.ps1 -Auth -Devices 4
+```
+
+This generates a fresh random password for each account (`RBX_esp01`..`RBX_esp0N`
+plus `RBX_dashboard`), sets `allow_anonymous false`, writes a password file
+and an ACL file (each device can only read/write its own `RBX/<id>/#`
+subtree; the dashboard account is read-only across `RBX/#`).
+**The generated credentials are never written into this repo.** They're
+printed once to the console and saved to
+`%LOCALAPPDATA%\mqtt-rbx\credentials.txt` on the machine you ran the
+script on — copy what you need from there into each board's
+`arduino_secrets.h` and keep that file out of git. `skill.sh login` and the
+dashboard's connection dialog both accept a username/password when set this
+way, and both work with them left blank when the broker is anonymous.
 
 ## Your device name
 
@@ -54,16 +70,16 @@ one shell. The name must match `DEVICE_NAME` in the board's
 `arduino_secrets.h` — same rule as mqtt-classroom, since it decides the
 board's topic prefix.
 
-## Credentials for the CLI
+## Pointing the CLI at your broker
 
 ```bash
 export MQTT_HOST=192.168.0.32          # the broker machine's LAN IP
-export MQTT_USER=RBX_esp01
-export MQTT_PASS=<from credentials.txt>
 ```
 
-Or save them once: `./skill.sh login RBX_esp01 <password>` (writes to
-`~/.mqtt-rbx`, same file as `name`).
+That's all you need in anonymous mode. If you set the broker up with
+`-Auth`, also set `MQTT_USER` / `MQTT_PASS`, or save them once:
+`./skill.sh login RBX_esp01 <password>` (writes to `~/.mqtt-rbx`, same file
+as `name`).
 
 ## Topics
 
@@ -101,12 +117,18 @@ Point the board at this broker instead of the classroom one:
 #define WIFI_PASSWORD "..."
 #define MQTT_HOST     "192.168.0.32"   // this machine's LAN IP
 #define MQTT_PORT     1883
-#define MQTT_USER     "RBX_esp01"
-#define MQTT_PASS     "..."             // from credentials.txt
 #define DEVICE_NAME   "RBX_esp01"
 ```
 
-`PubSubClient::connect()` takes a username/password overload:
+Anonymous mode (the default) needs no username/password on `connect()` —
+just the LWT overload already used for the classroom broker:
+
+```cpp
+mqtt.connect(DEVICE_NAME, topicStatus.c_str(), 0, true, "offline");
+```
+
+If the broker was set up with `-Auth`, add `MQTT_USER` / `MQTT_PASS` to
+`arduino_secrets.h` and use the username/password overload instead:
 
 ```cpp
 mqtt.connect(DEVICE_NAME, MQTT_USER, MQTT_PASS,
@@ -118,8 +140,9 @@ mqtt.connect(DEVICE_NAME, MQTT_USER, MQTT_PASS,
 `web/dashboard.html` shows every `RBX/*` device as online/offline (from the
 retained `status` topic), with last-seen time. Open it directly in a browser
 — no server needed. It connects over WebSockets (`ws://<host>:9001`), so it
-asks for the broker host and the `RBX_dashboard` username/password on first
-load and remembers them in `localStorage`.
+asks for the broker host on first load and remembers it in `localStorage`
+(username/password fields can stay blank in the default anonymous mode;
+fill them in only if the broker was set up with `-Auth`).
 
 ```
 dashboard.html?host=192.168.0.32
@@ -133,8 +156,8 @@ needs the 9001 listener rather than 1883.
 | Symptom | Cause |
 |---|---|
 | `check` fails, connection refused | Broker service not running — `Get-Service mosquitto`, or `install-broker.ps1` wasn't run as Administrator |
-| Board connects to WiFi but never reaches MQTT | Wrong `MQTT_HOST` (must be the broker PC's LAN IP, not `192.168.0.49`/classroom), or wrong username/password |
-| `Connection Refused: not authorised` (rc=5) | Bad username/password, or the account isn't in the password file — rerun `install-broker.ps1` |
+| Board connects to WiFi but never reaches MQTT | Wrong `MQTT_HOST` (must be the broker PC's LAN IP, not `192.168.0.49`/classroom) |
+| `Connection Refused: not authorised` (rc=5) | Only happens in `-Auth` mode: bad username/password, or the account isn't in the password file — rerun `install-broker.ps1 -Auth` |
 | Dashboard can't connect | Using `ws://` not `wss://`, wrong port (must be 9001, not 1883), or Windows Firewall blocking 9001 on this PC — allow both 1883 and 9001 for `mosquitto.exe` |
 | `mosquitto_sub not found` | Install the clients; `skill.sh` already looks in the default Windows install path |
 | Two boards fighting, kicking each other offline | They share the same `DEVICE_NAME` — every id must be unique |

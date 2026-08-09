@@ -6,10 +6,10 @@ and controlling XIAO ESP32C6 boards over it under the `RBX/` topic
 namespace, plus a browser dashboard that shows which devices are online.
 
 - Broker: your own machine (Windows service via Eclipse Mosquitto)
-- Auth: username/password, no anonymous access
+- Auth: anonymous by default (simplest on a trusted LAN); `-Auth` flag opts into per-device username/password + ACLs
 - Listeners: `1883` (plain MQTT, boards) and `9001` (MQTT over WebSockets, dashboard)
 - Topics: `RBX/<device_id>/{led/set,led/state,sensor/a0,status}`
-- Scale: a handful of accounts out of the box (default 4 device + 1 dashboard), easy to extend to ~10
+- Scale: tested with a handful of ESP32C6 boards, easy to extend to ~10
 
 ## Install as a skill
 
@@ -38,17 +38,18 @@ Full usage is documented in `skills/mqtt-rbx/SKILL.md`.
 ```powershell
 winget install --id EclipseFoundation.Mosquitto -e
 cd skills/mqtt-rbx/setup
-.\install-broker.ps1 -Devices 4      # run as Administrator
+.\install-broker.ps1      # run as Administrator - anonymous access, no accounts needed
 ```
 
-Credentials are generated fresh on your machine every time you run the
-script and are **never** committed to this repo — they're printed once and
-saved to `%LOCALAPPDATA%\mqtt-rbx\credentials.txt` locally.
+Want username/password auth instead? `.\install-broker.ps1 -Auth -Devices 4`
+— see `skills/mqtt-rbx/SKILL.md` for details. Credentials from that mode are
+generated fresh on your machine every run and are **never** committed to
+this repo — they're printed once and saved to
+`%LOCALAPPDATA%\mqtt-rbx\credentials.txt` locally.
 
 ```bash
 cd ../..
 ./skill.sh name RBX_esp01
-./skill.sh login RBX_esp01 <password from credentials.txt>
 ./skill.sh check
 ```
 
